@@ -1,12 +1,72 @@
-"""CDK application entry point (placeholder).
+"""CDK application entry point for WOP infrastructure (Task 20).
 
-The actual CDK stacks are implemented in Task 20:
-  - wop-data-stack     (DynamoDB tables, S3 buckets, SSM parameters)
-  - wop-compute-stack  (Lambda functions, API Gateway, EventBridge rules, IAM roles)
-  - wop-monitoring-stack (CloudWatch log groups, metrics, alarms, SNS, X-Ray)
-
-No stacks, tables, or Lambdas are defined at this stage. This file exists only so the
-`infra/` package layout is committed. Do not add real resources here until Task 20.
+Environment-agnostic: account/region resolved from the CDK environment at deploy time.
+Run ``cdk synth`` (or ``python infra/app.py`` for a bare synth) to produce CloudFormation
+without deploying. No AWS credentials, account IDs, or regions are hard-coded here.
 """
 
-# INTENTIONAL PLACEHOLDER — no aws_cdk import or App() instantiation yet (Task 20).
+from __future__ import annotations
+
+import os
+
+import aws_cdk as cdk
+
+from infra.stacks import ComputeStack, DataStack, MonitoringStack
+
+
+def build_app(environment: str | None = None, auth_mode: str | None = None) -> cdk.App:
+    """Construct the CDK app with all three WOP stacks.
+
+    Args:
+        environment: Deployment environment name (dev/staging/prod). Falls back to the
+            ``ENVIRONMENT`` env var, then ``dev``.
+        auth_mode: Auth mode passed to the compute stack's prod fail-closed guard.
+
+    Returns:
+        The configured :class:`aws_cdk.App`.
+    """
+    app = cdk.App()
+    env_name = (
+        environment
+        or app.node.try_get_context("environment")
+        or os.environ.get("ENVIRONMENT", "dev")
+    )
+
+    # Account/region supplied by the CDK CLI environment; never hard-coded.
+    cdk_env = cdk.Environment(
+        account=os.environ.get("CDK_DEFAULT_ACCOUNT"),
+        region=os.environ.get("CDK_DEFAULT_REGION"),
+    )
+
+    data = DataStack(
+        app,
+        f"wop-data-stack-{env_name}",
+        environment=env_name,
+        env=cdk_env,
+    )
+    compute = ComputeStack(
+        app,
+        f"wop-compute-stack-{env_name}",
+        environment=env_name,
+        main_table=data.main_table,
+        audit_table=data.audit_table,
+        events_table=data.events_table,
+        idempotency_table=data.idempotency_table,
+        import_bucket=data.import_bucket,
+        archive_bucket=data.archive_bucket,
+        error_bucket=data.error_bucket,
+        auth_mode=auth_mode,
+        env=cdk_env,
+    )
+    MonitoringStack(
+        app,
+        f"wop-monitoring-stack-{env_name}",
+        environment=env_name,
+        functions=compute.functions,
+        env=cdk_env,
+    )
+    return app
+
+
+if __name__ == "__main__":
+    build_app().synth()
