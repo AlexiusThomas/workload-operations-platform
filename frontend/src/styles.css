@@ -1,0 +1,37 @@
+:root { font-family: system-ui, sans-serif; color: #1a1a1a; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+.app { max-width: 1100px; margin: 0 auto; padding: 0 1rem 3rem; }
+.navbar { display: flex; align-items: center; gap: 1rem; padding: 0.75rem 0; border-bottom: 1px solid #ddd; }
+.navbar .brand { font-weight: 700; text-decoration: none; color: #0b5; }
+.nav-links { display: flex; gap: 1rem; flex: 1; }
+.nav-user { display: flex; gap: 0.5rem; align-items: center; }
+.role-badge { font-size: 0.8rem; background: #eef; padding: 0.15rem 0.5rem; border-radius: 4px; }
+.page { padding-top: 1rem; }
+.filters { display: flex; gap: 1rem; flex-wrap: wrap; align-items: end; margin-bottom: 1rem; }
+.filters label, .action-form label { display: flex; flex-direction: column; font-size: 0.85rem; gap: 0.25rem; }
+table { border-collapse: collapse; width: 100%; }
+th, td { border: 1px solid #e2e2e2; padding: 0.4rem 0.6rem; text-align: left; font-size: 0.9rem; }
+.status { font-size: 0.75rem; padding: 0.1rem 0.4rem; border-radius: 4px; background: #eee; }
+.status--AVAILABLE { background: #e6f7ec; }
+.status--REWORK_REQUIRED { background: #fde8e8; }
+.status--COMPLETE, .status--VERIFIED { background: #e6f0ff; }
+.state { padding: 1rem; border-radius: 6px; margin: 1rem 0; }
+.state--loading { background: #f5f5f5; }
+.state--empty { background: #fafafa; color: #666; }
+.state--error { background: #fdecec; color: #a00; }
+.banner { display: flex; justify-content: space-between; padding: 0.5rem 0.75rem; border-radius: 6px; margin: 0.5rem 0; }
+.banner--error { background: #fdecec; color: #a00; }
+.actions { margin-top: 1.5rem; }
+.action-buttons { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: end; }
+.action-form { display: flex; gap: 0.5rem; align-items: end; border: 1px dashed #ccc; padding: 0.5rem; border-radius: 6px; }
+.detail-grid { display: grid; grid-template-columns: max-content 1fr; gap: 0.3rem 1rem; }
+.detail-grid dt { font-weight: 600; }
+.tutorial-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.tutorial-card { background: #fff; border-radius: 8px; padding: 1.25rem; max-width: 520px; width: 90%; max-height: 85vh; overflow: auto; }
+.tutorial-card header { display: flex; justify-content: space-between; align-items: center; }
+.tutorial-nav { display: flex; justify-content: space-between; margin-top: 1rem; }
+.report-section { border-top: 2px solid #eee; margin-top: 1rem; padding-top: 0.5rem; }
+.user-list { list-style: none; padding: 0; display: grid; gap: 0.5rem; max-width: 380px; }
+.user-list button { width: 100%; display: flex; justify-content: space-between; padding: 0.6rem 0.8rem; }
+.notice { color: #666; font-size: 0.9rem; }
