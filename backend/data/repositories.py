@@ -876,6 +876,83 @@ def commit_staged_work_unit(
     )
 
 
+def write_rollover_transition(
+    canonical_item: Dict[str, Any],
+    *,
+    previous_date: str,
+    new_date: str,
+    new_rollover_count: int,
+    actor_id: str,
+    actor_role: str,
+    correlation_id: Optional[str],
+) -> None:
+    """Roll one AVAILABLE WorkUnit forward atomically (design: Rollover TransactWriteItems).
+
+    Writes three items in a single ``TransactWriteItems`` (FR-017 AC-5): the canonical
+    WorkUnit (with ``current_scheduled_date`` advanced, ``rollover_count`` incremented, and
+    the refreshed GSI-1 key), the denormalized projection under the parent WorkPackage PK,
+    and an immutable ``WORK_UNIT_ROLLED_OVER`` AuditEvent.
+
+    The canonical Put carries a ConditionExpression requiring the WorkUnit still be
+    ``state=AVAILABLE`` AND ``current_scheduled_date = previous_date``. If the unit has been
+    claimed since it was queried (BR-014), or the date was already advanced by a prior run
+    of the same cycle (FR-022 AC-8 idempotency guard), the condition fails and DynamoDB
+    raises ``TransactionCanceledException`` for the caller to skip silently.
+
+    The state is unchanged (AVAILABLE → AVAILABLE); ``completed_qty`` and
+    ``original_scheduled_date`` are preserved by the caller supplying an unmodified
+    ``canonical_item`` copy (FR-022 AC-4, AC-5, BR-015). Actor is ``SYSTEM``.
+    """
+    ts = iso_now()
+    canonical = dict(canonical_item)
+    canonical.setdefault("pk", wu_pk(canonical_item["work_unit_id"]))
+    canonical.setdefault("sk", METADATA_SK)
+    canonical["current_scheduled_date"] = new_date
+    canonical["rollover_count"] = new_rollover_count
+    canonical["updated_at"] = ts
+    # Refresh the GSI-1 composite sort key so the queue reflects the new scheduled date.
+    canonical["sk_gsi1"] = f"{canonical.get('site')}#{canonical.get('work_type')}#{new_date}"
+
+    canonical_put: Dict[str, Any] = {
+        "TableName": tables.main_table().table_name,
+        "Item": _to_dynamo(canonical),
+        "ConditionExpression": (
+            "#state = :available AND current_scheduled_date = :expected_old_date"
+        ),
+        "ExpressionAttributeNames": {"#state": "state"},
+        "ExpressionAttributeValues": _to_dynamo(
+            {":available": "AVAILABLE", ":expected_old_date": previous_date}
+        ),
+    }
+
+    projection = work_unit_projection(canonical)
+    projection["current_scheduled_date"] = new_date
+    audit = build_audit_event(
+        entity_type=ENTITY_WORK_UNIT,
+        entity_id=canonical_item["work_unit_id"],
+        action_type="WORK_UNIT_ROLLED_OVER",
+        actor_id=actor_id,
+        actor_role=actor_role,
+        before_state="AVAILABLE",
+        after_state="AVAILABLE",
+        correlation_id=correlation_id,
+        timestamp=ts,
+        metadata={
+            "previous_date": previous_date,
+            "new_date": new_date,
+            "new_rollover_count": new_rollover_count,
+        },
+    )
+
+    _transact_write(
+        [
+            {"Put": canonical_put},
+            _put(tables.main_table().table_name, projection),
+            _put(tables.audit_table().table_name, audit, "attribute_not_exists(pk)"),
+        ]
+    )
+
+
 def write_material_transition(
     canonical_item: Dict[str, Any],
     *,

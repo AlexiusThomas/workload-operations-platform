@@ -206,40 +206,40 @@ Property-based tests use Hypothesis with `@settings(max_examples=200)` (â‰¥1
     - Read-only `GET /v1/audit/{entity_type}/{entity_id}` returning AuditEvents in chronological order with pagination; Lead/Admin only; no write permissions
     - _Requirements: FR-017 AC-2, FR-017 AC-3, FR-017 AC-4_
 
-- [ ] 15. Implement the rollover handler
-  - [ ] 15.1 Implement `wop-rollover-handler` (`handlers/rollover.py`)
+- [x] 15. Implement the rollover handler
+  - [x] 15.1 Implement `wop-rollover-handler` (`handlers/rollover.py`)
     - EventBridge-triggered; query AVAILABLE units (GSI-1); per unit 3-item TransactWriteItems (canonical date advance + rollover_count increment, projection update, WORK_UNIT_ROLLED_OVER AuditEvent) with conditional guard on state=AVAILABLE and current_scheduled_date; rollover_cycle_key idempotency; skip silently on cancellation; preserve completed_qty and original_scheduled_date
     - _Requirements: FR-022 AC-1..AC-6, FR-022 AC-8, FR-020 AC-8, BR-014, BR-015, RISK-007_
 
-  - [ ] 15.2 Write property tests for rollover eligibility, preservation, and idempotency
+  - [x] 15.2 Write property tests for rollover eligibility, preservation, and idempotency
     - **Property 5: Rollover Eligibility Invariant**, **Property 6: Rollover Data Preservation**, **Property 7: Rollover Idempotency**
     - Assert non-AVAILABLE units unchanged; AVAILABLE units advance date/increment count once preserving qty and original date; N executions per cycle equal one
     - **Validates: Requirements FR-022 AC-2, FR-022 AC-3, FR-022 AC-4, FR-022 AC-5, FR-022 AC-6, FR-022 AC-8, FR-020 AC-8, BR-014, BR-015**
 
-- [ ] 16. Implement the report handler
-  - [ ] 16.1 Implement `wop-report-handler` (`handlers/report.py`)
+- [x] 16. Implement the report handler
+  - [x] 16.1 Implement `wop-report-handler` (`handlers/report.py`)
     - `GET`/`POST /v1/reports/weekly` and EventBridge weekly schedule; aggregate verified units by work_type/site, meters by material type, verified qty by Technician, runs/meters by Runner; derive exclusively from ProductionEvents and MaterialEvents; separate Technician and Runner sections (never combined); deterministic given same events
     - _Requirements: FR-024 AC-1..AC-5, BR-011, BR-016, NFR-010 AC-3, NFR-010 AC-5_
 
-  - [ ] 16.2 Write integration test for report reconciliation
+  - [x] 16.2 Write integration test for report reconciliation
     - Seed ProductionEvents/MaterialEvents; assert report totals reconcile exactly and no combined metric appears
     - _Requirements: FR-024 AC-2, FR-024 AC-4, BR-016_
 
-- [ ] 17. Concurrency tests for atomic claims
-  - [ ] 17.1 Write concurrency test for atomic WorkUnit claim
+- [x] 17. Concurrency tests for atomic claims
+  - [x] 17.1 Write concurrency test for atomic WorkUnit claim
     - Fire N simultaneous claims on one AVAILABLE WorkUnit against moto DynamoDB; assert exactly one 200 and N-1 409 conflicts, single claimed_by
     - _Requirements: FR-006 AC-2, FR-006 AC-5, NFR-005 AC-3, BR-001_
 
-  - [ ] 17.2 Write concurrency test for atomic MaterialRequirement claim
+  - [x] 17.2 Write concurrency test for atomic MaterialRequirement claim
     - Fire N simultaneous material-claims on one MATERIAL_REQUIRED requirement; assert exactly one success and N-1 conflicts
     - _Requirements: FR-004 AC-2, NFR-005 AC-3_
 
-- [ ] 18. End-to-end synthetic workflow test
-  - [ ] 18.1 Write the full synthetic end-to-end workflow test
+- [x] 18. End-to-end synthetic workflow test
+  - [x] 18.1 Write the full synthetic end-to-end workflow test
     - Cover ingestion â†’ material requirement calculation â†’ material claim/delivery â†’ technician claim â†’ partial work/quantity update â†’ prep completion â†’ labeling â†’ tote assignment â†’ ready-to-verify â†’ fail-verify/rework (qty preserved) â†’ re-progress â†’ verification (ProductionEvent) â†’ completion â†’ weekly report â†’ eligible next-day rollover; assert report reconciles exactly to immutable ProductionEvents and MaterialEvents
     - _Requirements: NFR-005 AC-6, FR-024 AC-4, BR-016_
 
-- [ ] 19. Checkpoint - Ensure all backend tests pass
+- [x] 19. Checkpoint - Ensure all backend tests pass
   - Ensure all handler, concurrency, and end-to-end tests pass, ask the user if questions arise.
 
 - [ ] 20. Define AWS CDK infrastructure as code (Python)
