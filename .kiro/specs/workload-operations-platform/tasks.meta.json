@@ -1,0 +1,13 @@
+{
+  "pbtResults": {
+    "6.3 Write property test for idempotency key deduplication": {
+      "status": "passed",
+      "lastRunTimestamp": 1788741532830
+    },
+    "4.2 Write property test for mandatory attribute validation": {
+      "status": "passed",
+      "lastRunTimestamp": 1788741536413
+    }
+  },
+  "executionHistory": {}
+}

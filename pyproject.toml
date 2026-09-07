@@ -1,0 +1,100 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "workload-operations-platform"
+version = "0.1.0"
+description = "Workload Operations Platform (WOP) V1 — serverless workload management on AWS."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+
+# Runtime dependencies for the Python + AWS Lambda backend (CON-001).
+dependencies = [
+    "boto3~=1.34",
+    "jsonschema~=4.21",
+]
+
+[project.optional-dependencies]
+# Development, testing, and tooling dependencies.
+dev = [
+    "pytest~=8.0",
+    "pytest-cov~=4.1",
+    "hypothesis~=6.98",
+    "moto[dynamodb]~=5.0",
+    "flake8~=7.0",
+    "black~=24.2",
+    "mypy~=1.8",
+]
+# AWS CDK (Python) for infrastructure as code (CON-005). Real stacks land in Task 20.
+infra = [
+    "aws-cdk-lib~=2.130",
+    "constructs~=10.3",
+]
+
+[tool.setuptools]
+# Backend Python source lives under backend/; CDK infra under infra/.
+packages = [
+    "backend",
+    "backend.domain",
+    "backend.auth",
+    "backend.idempotency",
+    "backend.data",
+    "backend.handlers",
+    "backend.observability",
+    "backend.synthetic",
+    "infra",
+]
+
+# ---------------------------------------------------------------------------
+# pytest configuration (NFR-005)
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+# Note: --cov-fail-under is intentionally NOT set here so that an empty test run
+# (Task 1, before any source/tests exist) does not fail. The 80% line-coverage
+# threshold (NFR-005 AC-1) is configured under [tool.coverage.report] fail_under
+# and is enforced by CI when coverage is collected against real source code.
+addopts = "-ra"
+
+# ---------------------------------------------------------------------------
+# coverage configuration — 80% line coverage threshold (NFR-005 AC-1)
+# ---------------------------------------------------------------------------
+[tool.coverage.run]
+branch = true
+source = ["backend"]
+omit = [
+    "tests/*",
+    "*/__init__.py",
+]
+
+[tool.coverage.report]
+# NFR-005 AC-1: minimum 80% line coverage. This triggers only when coverage is
+# run against real source code (e.g., `pytest --cov=backend --cov-fail-under=80`).
+fail_under = 80
+show_missing = true
+skip_covered = false
+
+# ---------------------------------------------------------------------------
+# black configuration
+# ---------------------------------------------------------------------------
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+# ---------------------------------------------------------------------------
+# mypy configuration
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+files = ["backend", "infra"]
+exclude = "(^build/|^dist/|cdk\\.out/)"
