@@ -184,27 +184,11 @@ def test_runner_match_admin_bypass() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Identity mismatch warning (FR-018 AC-3) — logged, never raised
+# Identity mismatch control removed (FR-018 AC-3)
 # ---------------------------------------------------------------------------
-def test_identity_mismatch_logs_warning(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured = {}
+def test_identity_mismatch_control_removed_no_client_actor_identity() -> None:
+    # FR-018 AC-3: no V1 endpoint accepts a client-supplied actor identity; the dead
+    # check_identity_mismatch control was removed. Guard against silent reintroduction.
+    from backend.auth import middleware
 
-    def fake_warning(message, **fields):
-        captured["message"] = message
-        captured.update(fields)
-        return fields
-
-    monkeypatch.setattr(middleware.logger, "warning", fake_warning)
-    middleware.check_identity_mismatch(_TECH, client_supplied_id="TECH-999")
-    assert captured["message"] == middleware.IDENTITY_MISMATCH_WARNING
-    assert captured["client_supplied_identity"] == "TECH-999"
-    assert captured["session_identity"] == "TECH-001"
-
-
-def test_identity_match_no_warning(monkeypatch: pytest.MonkeyPatch) -> None:
-    called = {"count": 0}
-    monkeypatch.setattr(
-        middleware.logger, "warning", lambda *a, **k: called.__setitem__("count", 1)
-    )
-    middleware.check_identity_mismatch(_TECH, client_supplied_id="TECH-001")
-    assert called["count"] == 0
+    assert not hasattr(middleware, "check_identity_mismatch")

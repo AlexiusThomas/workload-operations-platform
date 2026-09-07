@@ -32,7 +32,7 @@ from uuid import uuid4
 
 from backend.auth import middleware as auth
 from backend.data import repositories as repo
-from backend.handlers import common
+from backend.handlers import common, validation
 from backend.handlers.middleware import error_handler
 from backend.observability import errors, metrics
 
@@ -199,6 +199,8 @@ def _get(event: Dict[str, Any], correlation_id: str) -> Dict[str, Any]:
     user_ctx = common.authenticate(event)
     auth.authorize_operation(user_ctx, "view_report")
     week_key = _require_week_key(common.query_param(event, "week_key"))
+    # Validate the ISO week_key format against the same schema used by POST (SEC-006 AC-1).
+    validation.validate_operation("report_request", {"week_key": week_key})
     report = generate_weekly_report(week_key)
     return common.success(200, report, correlation_id)
 
@@ -208,6 +210,7 @@ def _post(event: Dict[str, Any], correlation_id: str) -> Dict[str, Any]:
     user_ctx = common.authenticate(event)
     auth.authorize_operation(user_ctx, "trigger_report")
     body = common.parse_body(event)
+    validation.validate_operation("report_request", body)
     week_key = _require_week_key(body.get("week_key"))
     metrics.increment(metrics.REPORT_GENERATION)
     report = generate_weekly_report(week_key)

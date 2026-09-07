@@ -4,12 +4,18 @@ Provides :func:`authenticate` (resolves a :class:`~backend.auth.provider.UserCon
 the request via the injected :class:`~backend.auth.provider.AuthProvider`) and
 :func:`authorize` (enforces the design's RBAC matrix server-side, SEC-002 AC-1).
 
-Identity is resolved exclusively from server-side session context (FR-018 AC-1, BR-008);
-a client-supplied identity that differs from the session identity is ignored and an
-``IDENTITY_MISMATCH_WARNING`` is logged (FR-018 AC-3). Ownership checks implement the
-design's Ownership Rules, including Rule 4: for label / tote-assign / ready-to-verify a
-Technician must be the claiming Technician, while Verifier_Lead and Manager_Admin bypass
-the ownership check.
+Identity is resolved exclusively from server-side session context (FR-018 AC-1, BR-008).
+Ownership checks implement the design's Ownership Rules, including Rule 4: for
+label / tote-assign / ready-to-verify a Technician must be the claiming Technician, while
+Verifier_Lead and Manager_Admin bypass the ownership check.
+
+FR-018 AC-3 note: No V1 endpoint accepts a client-supplied *actor* identity — the actor is
+always resolved server-side from the authenticated bearer token via :func:`authenticate`.
+The only client-supplied identity in the V1 API is the assignment *target*
+(``technician_id`` on ``POST /assign``), which is not an actor identity. There is therefore
+no client-vs-session actor mismatch to detect in V1, and no IDENTITY_MISMATCH_WARNING is
+emitted. If a future endpoint accepts a client-supplied actor identity, add an explicit
+mismatch check at that call site so the server-resolved identity remains authoritative.
 
 This module is import-safe without AWS credentials.
 """
@@ -26,14 +32,10 @@ from backend.auth.provider import (
     AuthProvider,
     UserContext,
 )
-from backend.observability import logger
 from backend.observability.errors import AuthorizationError
 
 #: Roles that bypass WorkUnit ownership checks for label/tote/ready-to-verify (Rule 4).
 _OWNERSHIP_BYPASS_ROLES = frozenset({VERIFIER_LEAD, MANAGER_ADMIN})
-
-#: AuditEvent action_type logged when client identity differs from session identity.
-IDENTITY_MISMATCH_WARNING = "IDENTITY_MISMATCH_WARNING"
 
 
 def authenticate(event: Dict, provider: AuthProvider) -> UserContext:
@@ -50,32 +52,6 @@ def authenticate(event: Dict, provider: AuthProvider) -> UserContext:
         AuthenticationError: If the token is absent or invalid (HTTP 401).
     """
     return provider.authenticate(event)
-
-
-def check_identity_mismatch(
-    user_ctx: UserContext,
-    client_supplied_id: Optional[str],
-    *,
-    correlation_id: Optional[str] = None,
-    entity_type: Optional[str] = None,
-    entity_id: Optional[str] = None,
-) -> None:
-    """Log an IDENTITY_MISMATCH_WARNING when a client identity differs from the session.
-
-    Attribution always uses the server-side identity; this only records the discrepancy
-    (FR-018 AC-3). Never raises.
-    """
-    if client_supplied_id and client_supplied_id != user_ctx.user_id:
-        logger.warning(
-            IDENTITY_MISMATCH_WARNING,
-            correlation_id=correlation_id,
-            user_id=user_ctx.user_id,
-            user_role=user_ctx.role,
-            entity_type=entity_type,
-            entity_id=entity_id,
-            session_identity=user_ctx.user_id,
-            client_supplied_identity=client_supplied_id,
-        )
 
 
 def authorize(user_ctx: UserContext, required_roles: Iterable[str]) -> None:

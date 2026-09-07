@@ -280,3 +280,37 @@ def test_report_missing_week_key(wired: Any) -> None:
     resp = report.handle(event)
     assert resp["statusCode"] == 400
     assert json.loads(resp["body"])["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_report_post_malformed_week_key_returns_400(wired: Any) -> None:
+    # Malformed week_key fails schema validation before generation (SEC-006 AC-1).
+    event = {
+        "httpMethod": "POST",
+        "headers": {"Authorization": f"Bearer {ADMIN}"},
+        "body": json.dumps({"week_key": "garbage"}),
+        "requestContext": {"requestId": "req"},
+    }
+    resp = report.handle(event)
+    assert resp["statusCode"] == 400
+    assert json.loads(resp["body"])["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_report_get_malformed_week_key_returns_400(wired: Any) -> None:
+    # GET applies the same ISO week_key format validation as POST (SEC-006 AC-1).
+    resp = _get(LEAD, week_key="2024-XX")
+    assert resp["statusCode"] == 400
+    assert json.loads(resp["body"])["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_report_post_well_formed_week_key_returns_200(wired: Any) -> None:
+    # Regression guard: a valid ISO week_key still passes validation and generates.
+    _seed()
+    event = {
+        "httpMethod": "POST",
+        "headers": {"Authorization": f"Bearer {ADMIN}"},
+        "body": json.dumps({"week_key": WEEK}),
+        "requestContext": {"requestId": "req"},
+    }
+    resp = report.handle(event)
+    assert resp["statusCode"] == 200
+    assert json.loads(resp["body"])["week_key"] == WEEK
