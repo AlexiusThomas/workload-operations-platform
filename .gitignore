@@ -8,6 +8,7 @@ __pycache__/
 .eggs/
 build/
 dist/
+dist_artifacts/
 .venv/
 venv/
 env/

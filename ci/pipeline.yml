@@ -1,0 +1,77 @@
+# WOP CI pipeline — pipeline-agnostic definition (Task 21.1)
+#
+# The internal CI/CD tooling is unconfirmed (DEP-005, OQ-009 / OQ-010:
+# INTERNAL-INTEGRATION-TODO). This file is the single source of truth for the
+# pipeline STAGES, ORDER, and GATES, expressed in a tool-neutral form. A concrete
+# runnable reference implementation for GitHub Actions lives at
+# .github/workflows/ci.yml and mirrors these stages exactly. When the approved
+# internal pipeline tool is selected, translate these stages 1:1 into that tool.
+#
+# Principles (NFR-005 AC-5, NFR-006 AC-3, NFR-007 AC-2, NFR-008 AC-1/AC-2):
+#   - Reproducible installs: pinned dependencies from requirements.txt / package-lock.
+#   - No real AWS credentials required for ordinary validation (moto mocks DynamoDB;
+#     cdk synth is deploy-free via aws_cdk.assertions / app.synth()).
+#   - No secrets are hardcoded; environment configuration is injected at deploy time.
+#   - Artifacts are environment-agnostic (no account IDs, regions, or endpoints baked in).
+#   - Any stage failure blocks the pipeline (fail-fast).
+#   - No deployment to AWS occurs in CI validation.
+#   - A supported Node.js LTS (22.x) is used for the jsii/CDK toolchain — never Node 24.x,
+#     which is incompatible with the pinned jsii runtime.
+
+pipeline:
+  name: wop-ci
+  trigger:
+    - push: [master, main]
+    - pull_request: [master, main]
+
+  runtimes:
+    python: "3.11"
+    node: "22"          # supported LTS; required for jsii/CDK (do not use 24.x)
+
+  # Install steps are reproducible: exact, pinned dependency sets.
+  install:
+    python: "pip install -r requirements.txt"
+    node: "npm ci --prefix frontend"   # only runs when frontend/package-lock.json exists
+
+  stages:
+    - name: lint
+      description: Static analysis — must pass before tests run.
+      steps:
+        - "black --check backend infra tests"
+        - "flake8 backend infra tests"
+        - "mypy backend infra"
+        - "cdk synth (deploy-free) — validated via infra synth tests"
+        # Frontend lint (ESLint/Prettier) runs only if frontend code exists (Task 22).
+        - "frontend lint (conditional: skipped until Task 22 adds frontend/package.json)"
+      blocking: true
+
+    - name: unit_and_property_tests
+      description: Backend unit + property tests with the 80% coverage gate.
+      steps:
+        - "pytest tests/unit tests/property --cov=backend --cov-report=term-missing --cov-fail-under=80"
+      coverage_gate: 80          # NFR-005 AC-1
+      blocking: true
+
+    - name: build
+      description: Deploy-free build/packaging of environment-agnostic artifacts.
+      steps:
+        - "cdk synth (all stacks, deploy-free) — produces CloudFormation templates"
+        - "python -m build (Lambda source package)"
+        - "frontend build (conditional: vite build, skipped until Task 22)"
+      blocking: true
+
+    - name: infra_tests
+      description: Task 20 CDK synth/assertion tests.
+      steps:
+        - "pytest tests/infra"
+      blocking: true
+
+    - name: integration_concurrency_e2e
+      description: Integration, concurrency, and end-to-end synthetic tests (moto-backed).
+      steps:
+        - "pytest tests/integration tests/concurrency tests/e2e"
+      blocking: true
+
+  # Explicitly NOT part of CI validation: any 'deploy' stage. Deployment to AWS is
+  # gated behind the approved internal pipeline (DEP-005) and is out of scope here.
+  deploy: DISABLED   # INTERNAL-INTEGRATION-TODO (DEP-005): wire to approved deploy tool.
