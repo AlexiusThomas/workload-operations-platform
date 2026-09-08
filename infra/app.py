@@ -1,7 +1,7 @@
 """CDK application entry point for WOP infrastructure (Task 20).
 
 Environment-agnostic: account/region resolved from the CDK environment at deploy time.
-Run ``cdk synth`` (or ``python infra/app.py`` for a bare synth) to produce CloudFormation
+Run ``cdk synth`` (or ``python -m infra.app`` for a bare synth) to produce CloudFormation
 without deploying. No AWS credentials, account IDs, or regions are hard-coded here.
 """
 

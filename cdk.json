@@ -1,5 +1,5 @@
 {
-  "app": "python infra/app.py",
+  "app": "python -m infra.app",
   "watch": {
     "include": ["infra/**"],
     "exclude": ["**/__pycache__/**", "tests/**"]
