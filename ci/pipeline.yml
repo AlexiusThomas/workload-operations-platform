@@ -41,15 +41,29 @@ pipeline:
         - "flake8 backend infra tests"
         - "mypy backend infra"
         - "cdk synth (deploy-free) — validated via infra synth tests"
-        # Frontend lint (ESLint/Prettier) runs only if frontend code exists (Task 22).
-        - "frontend lint (conditional: skipped until Task 22 adds frontend/package.json)"
+        # Frontend lint (ESLint) runs when frontend/package.json exists (present since Task 22).
+        - "frontend lint (conditional on frontend/package.json)"
       blocking: true
 
-    - name: unit_and_property_tests
-      description: Backend unit + property tests with the 80% coverage gate.
+    - name: backend_tests
+      description: Full backend suite with the 80% coverage gate measured against the
+        complete backend test set (unit + property + integration + concurrency + e2e) in one
+        job, so the gate reflects real backend coverage and no backend tests run twice.
       steps:
-        - "pytest tests/unit tests/property --cov=backend --cov-report=term-missing --cov-fail-under=80"
+        - "pytest tests/unit tests/property tests/integration tests/concurrency tests/e2e --cov=backend --cov-report=term-missing --cov-fail-under=80"
       coverage_gate: 80          # NFR-005 AC-1
+      blocking: true
+
+    - name: infra_tests
+      description: Task 20 CDK synth/assertion tests (deploy-free).
+      steps:
+        - "pytest tests/infra"
+      blocking: true
+
+    - name: frontend_tests
+      description: Frontend typecheck and component/unit tests (conditional on frontend).
+      steps:
+        - "frontend typecheck + test (conditional on frontend/package.json)"
       blocking: true
 
     - name: build
@@ -57,19 +71,7 @@ pipeline:
       steps:
         - "cdk synth (all stacks, deploy-free) — produces CloudFormation templates"
         - "python -m build (Lambda source package)"
-        - "frontend build (conditional: vite build, skipped until Task 22)"
-      blocking: true
-
-    - name: infra_tests
-      description: Task 20 CDK synth/assertion tests.
-      steps:
-        - "pytest tests/infra"
-      blocking: true
-
-    - name: integration_concurrency_e2e
-      description: Integration, concurrency, and end-to-end synthetic tests (moto-backed).
-      steps:
-        - "pytest tests/integration tests/concurrency tests/e2e"
+        - "frontend build (conditional on frontend/package.json)"
       blocking: true
 
   # Explicitly NOT part of CI validation: any 'deploy' stage. Deployment to AWS is

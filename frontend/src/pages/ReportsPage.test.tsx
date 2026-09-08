@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { ReportsPage } from "./ReportsPage";
-import { AuthProvider } from "../auth/AuthContext";
+import { AuthProvider } from "../auth/AuthProvider";
 
 // Verifies the Technician and Material Runner report sections render as SEPARATE sections
 // (BR-016). We assert both section headings exist independently.

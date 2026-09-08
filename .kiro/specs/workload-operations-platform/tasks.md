@@ -1,4 +1,4 @@
-﻿# Implementation Plan: Workload Operations Platform (WOP) V1
+# Implementation Plan: Workload Operations Platform (WOP) V1
 
 ## Overview
 
@@ -242,50 +242,50 @@ Property-based tests use Hypothesis with `@settings(max_examples=200)` (â‰¥1
 - [x] 19. Checkpoint - Ensure all backend tests pass
   - Ensure all handler, concurrency, and end-to-end tests pass, ask the user if questions arise.
 
-- [ ] 20. Define AWS CDK infrastructure as code (Python)
-  - [ ] 20.1 Implement `wop-data-stack`
+- [x] 20. Define AWS CDK infrastructure as code (Python)
+  - [x] 20.1 Implement `wop-data-stack`
     - DynamoDB tables (main, audit, events, idempotency) with GSI-1..7, AWS_OWNED_KMS encryption, PITR (all except idempotency), idempotency TTL attribute; S3 import/archive/error buckets with SSE and public access block; SSM parameters for table/bucket names
     - _Requirements: SEC-005 AC-1, SEC-005 AC-2, SEC-005 AC-3, SEC-007 AC-2, NFR-003 AC-2, NFR-006 AC-1, NFR-007 AC-1, CON-006_
 
-  - [ ] 20.2 Implement `wop-compute-stack` with least-privilege IAM roles
+  - [x] 20.2 Implement `wop-compute-stack` with least-privilege IAM roles
     - Lambda functions, Lambda Layer (idempotency), API Gateway (HTTPS-only, TLS 1.2+, `/v1/` routes), EventBridge rules (rollover, report), environment variables; separate IAM role per Lambda scoped to specific tables/actions and S3 prefixes; audit/events roles get PutItem only (no Update/Delete); idempotency role gets DeleteItem scoped to IN_FLIGHT only; synth-time guard failing when prod `AUTH_MODE` is empty/synthetic; exclude synthetic-data function from prod
     - _Requirements: SEC-001 AC-4, SEC-002 AC-1, SEC-003 AC-1..AC-4, SEC-004 AC-1..AC-3, SEC-007 AC-1, SEC-007 AC-3, NFR-002 AC-2, NFR-003 AC-1, NFR-010 AC-2, FR-023 AC-3, CON-005_
 
-  - [ ] 20.3 Implement `wop-monitoring-stack`
+  - [x] 20.3 Implement `wop-monitoring-stack`
     - CloudWatch Log Groups with SSM-driven retention, custom metric filters, alarms (high error rate, p95 latency, claim conflict spike, ingestion failure, unhandled error), SNS topics, X-Ray active tracing/sampling
     - _Requirements: NFR-001 AC-3, NFR-002 AC-3, NFR-004 AC-3, NFR-004 AC-4, NFR-009 AC-2_
 
-  - [ ] 20.4 Write CDK synth/assertion tests
+  - [x] 20.4 Write CDK synth/assertion tests
     - Assert PITR/encryption/public-access-block settings, PutItem-only audit/events roles, and prod auth-mode synth guard failure
     - _Requirements: SEC-005, SEC-007 AC-3, SEC-001 AC-4_
 
-- [ ] 21. Define the CI pipeline as code
-  - [ ] 21.1 Implement pipeline definition (`ci/` pipeline-agnostic config)
+- [x] 21. Define the CI pipeline as code
+  - [x] 21.1 Implement pipeline definition (`ci/` pipeline-agnostic config)
     - Stages: lint (flake8/black/mypy, ESLint/Prettier, cdk synth), unit + property tests with 80% coverage gate, build (Lambda bundle, vite build, cdk synth), integration/concurrency/e2e tests; block on any failure; environment-agnostic artifacts
     - _Requirements: NFR-005 AC-5, NFR-006 AC-3, NFR-007 AC-2, NFR-008 AC-1, NFR-008 AC-2_
 
-- [ ] 22. Implement the React + TypeScript frontend
-  - [ ] 22.1 Scaffold the SPA and API client
+- [x] 22. Implement the React + TypeScript frontend
+  - [x] 22.1 Scaffold the SPA and API client
     - Vite + React + TypeScript app; typed API client for `/v1/` endpoints with bearer token and Idempotency-Key headers; auth token handling for synthetic users
     - _Requirements: CON-001, SEC-001 AC-2, FR-020 AC-1_
 
-  - [ ] 22.2 Implement the workload queue view
+  - [x] 22.2 Implement the workload queue view
     - List AVAILABLE WorkUnits with filters (site, work_type, current_scheduled_date), pagination (â‰¤100), and required display fields
     - _Requirements: FR-005 AC-1, FR-005 AC-2, FR-005 AC-4, FR-005 AC-5_
 
-  - [ ] 22.3 Implement work tracking views (claim through complete)
+  - [x] 22.3 Implement work tracking views (claim through complete)
     - UI for claim, start, quantity update, prep-complete, label, tote-assign, ready-to-verify, verify, fail-verify, complete, and exception assignment, driven by state and role
     - _Requirements: FR-006, FR-007, FR-008, FR-009, FR-010, FR-011, FR-012, FR-013, FR-014, FR-015, FR-016_
 
-  - [ ] 22.4 Implement material tracking views
+  - [x] 22.4 Implement material tracking views
     - Material Runner queue (by status), material-claim and material-deliver forms capturing qty/meters
     - _Requirements: FR-003 AC-5, FR-004 AC-1, FR-004 AC-4_
 
-  - [ ] 22.5 Implement audit history and reports views
+  - [x] 22.5 Implement audit history and reports views
     - Audit history view (chronological) for Lead/Admin; weekly report view with separate Technician and Material Runner sections
     - _Requirements: FR-017 AC-3, FR-024 AC-1, FR-024 AC-3, BR-016_
 
-  - [ ]* 22.6 Write frontend component/unit tests
+  - [x]* 22.6 Write frontend component/unit tests
     - Test queue rendering, role-gated actions, and report section separation
     - _Requirements: FR-005 AC-4, FR-019 AC-3, BR-016_
 

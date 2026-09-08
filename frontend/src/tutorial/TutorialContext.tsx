@@ -1,8 +1,8 @@
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext } from "react";
 
-const SEEN_PREFIX = "wop.tutorial.seen.";
+export const SEEN_PREFIX = "wop.tutorial.seen.";
 
-interface TutorialState {
+export interface TutorialState {
   open: boolean;
   start: () => void;
   close: () => void;
@@ -10,43 +10,11 @@ interface TutorialState {
   hasSeen: (userId: string) => boolean;
 }
 
-const Ctx = createContext<TutorialState | undefined>(undefined);
+export const TutorialCtx = createContext<TutorialState | undefined>(undefined);
 
-export function TutorialProvider({ children }: { children: ReactNode }) {
-  const [open, setOpen] = useState(false);
-
-  const hasSeen = useCallback((userId: string) => {
-    try {
-      return localStorage.getItem(SEEN_PREFIX + userId) === "1";
-    } catch {
-      return false;
-    }
-  }, []);
-
-  const markSeen = useCallback((userId: string) => {
-    try {
-      localStorage.setItem(SEEN_PREFIX + userId, "1");
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
-  const value = useMemo<TutorialState>(
-    () => ({
-      open,
-      start: () => setOpen(true),
-      close: () => setOpen(false),
-      markSeen,
-      hasSeen,
-    }),
-    [open, markSeen, hasSeen],
-  );
-
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
-}
-
+// Non-component exports only (hook + context). The Provider lives in TutorialProvider.tsx.
 export function useTutorial(): TutorialState {
-  const ctx = useContext(Ctx);
+  const ctx = useContext(TutorialCtx);
   if (!ctx) throw new Error("useTutorial must be used within TutorialProvider");
   return ctx;
 }
