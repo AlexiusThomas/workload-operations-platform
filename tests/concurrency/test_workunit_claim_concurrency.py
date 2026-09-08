@@ -205,11 +205,43 @@ def test_concurrent_work_unit_claim_serialized_conditional(wired: Any) -> None:
     _assert_exactly_one_winner(results, n, work_unit_id)
 
 
-def test_concurrent_work_unit_claim_threads(wired: Any) -> None:
-    """Best-effort true-thread dispatch; the invariant must still hold under contention."""
+def test_concurrent_work_unit_claim_threads(wired: Any, monkeypatch: Any) -> None:
+    """Deterministic concurrent-claim race that exercises the REAL conditional write.
+
+    This models the dangerous race precisely without depending on moto's (non-guaranteed)
+    thread safety:
+
+    * Every worker reads the SAME stale pre-claim snapshot (all observe state=AVAILABLE at
+      once) — the exact condition under which a lost-update could occur.
+    * All workers are released together via a Barrier.
+    * ONLY the moto TransactWriteItems execution boundary (``repo._transact_write``) is
+      serialized, because real DynamoDB atomically arbitrates conflicting conditional writes
+      while moto's in-process store is not thread-safe. The production ConditionExpression,
+      TransactWriteItems usage, handler logic, and 409 semantics are unchanged — each worker
+      still runs the real handler -> repository conditional write.
+
+    Real DynamoDB would let exactly one conditional write win; this harness reproduces that
+    arbitration deterministically and asserts exactly one 200 winner + N-1 409 conflicts.
+    """
     work_unit_id = "wu-conc-2"
     _seed_available_work_unit(work_unit_id)
     n = 10
+
+    # All workers operate from the SAME stale AVAILABLE snapshot (simultaneous read).
+    stale_snapshot = repo.get_work_unit(work_unit_id)
+    assert stale_snapshot is not None and stale_snapshot["state"] == "AVAILABLE"
+    monkeypatch.setattr(workunit, "_load_work_unit", lambda _wuid: dict(stale_snapshot))
+
+    # Serialize ONLY the moto transaction boundary so the emulator arbitrates one conditional
+    # write at a time (as real DynamoDB does); production code is untouched.
+    real_transact = repo._transact_write
+    transact_lock = threading.Lock()
+
+    def _serialized_transact(items: Any) -> Any:
+        with transact_lock:
+            return real_transact(items)
+
+    monkeypatch.setattr(repo, "_transact_write", _serialized_transact)
 
     results: List[Dict[str, Any]] = []
     results_lock = threading.Lock()
@@ -218,7 +250,7 @@ def test_concurrent_work_unit_claim_threads(wired: Any) -> None:
     def _worker(idx: int) -> None:
         token = TECH_TOKENS[idx % len(TECH_TOKENS)]
         event = _claim_event(work_unit_id, token)
-        barrier.wait()  # release all threads as simultaneously as possible
+        barrier.wait()  # release all workers as simultaneously as possible
         resp = workunit.handle(event)
         with results_lock:
             results.append(resp)

@@ -7,22 +7,29 @@ completion.
 
 ## Project status
 
-Implemented through **Task 22**:
+**Completed through Task 23** (the final checkpoint). The Workload Operations Platform now
+includes:
 
-- **Backend** - Python AWS Lambda handlers, domain layer, auth/RBAC, idempotency, and the
-  DynamoDB data access layer, with unit, property, integration, concurrency, and end-to-end
-  synthetic tests.
-- **AWS CDK infrastructure (Task 20)** - data, compute, and monitoring stacks defined in
-  Python CDK, validated by deploy-free synth/assertion tests. Nothing is deployed to AWS.
-- **CI pipeline (Task 21)** - a pipeline-agnostic definition plus a GitHub Actions reference
-  workflow running lint, the full backend suite with the 80% coverage gate, infra synth
-  tests, and frontend checks. No AWS credentials or deployment occur in CI.
-- **React frontend (Task 22)** - React 18 + TypeScript (Vite) SPA consuming the backend
-  `/v1/` API, with role-gated screens for queue, work tracking, materials, audit, and reports.
-- **Role-based Help/Tutorial (Task 22)** - a replayable, role-adaptive in-app tutorial whose
-  steps derive from the actual RBAC model and show only actions each role may perform.
+- **Python backend** - AWS Lambda handlers and a pure domain layer.
+- **DynamoDB persistence** - multi-table data access layer (main, audit, events, idempotency).
+- **RBAC / auth boundary** - a replaceable authentication abstraction and server-side RBAC.
+- **Idempotency** - keyed, fingerprinted idempotent writes for all mutating operations.
+- **Work package / work unit workflows** - full state machine from claim through completion.
+- **Material workflow** - material-requirement claim and delivery.
+- **Rollover** - scheduled, exactly-once per-cycle rollover of eligible work.
+- **Weekly reporting** - deterministic reports derived from immutable events.
+- **Immutable audit / events** - append-only AuditEvents, ProductionEvents, MaterialEvents.
+- **Observability** - structured logging, custom metrics, and error handling.
+- **AWS CDK infrastructure** - data, compute, and monitoring stacks (Python CDK).
+- **React frontend** - React 18 + TypeScript (Vite) SPA consuming the `/v1/` API.
+- **Role-based tutorial** - a replayable, role-adaptive in-app Help/Tutorial.
+- **CI validation** - a pipeline-agnostic definition plus a GitHub Actions workflow (lint,
+  backend tests, infra synth tests, frontend tests, build).
 
-**Task 23 (final checkpoint - ensure all tests pass) is the remaining outstanding task.**
+The backend test suite enforces a **>=80% coverage gate**. All validation is deploy-free:
+nothing is deployed to AWS, no AWS credentials are used, and no production deployment has
+occurred. DEP-001 (RATS ingestion) and DEP-002 (Midway authentication) remain documented,
+unresolved external integration boundaries (fail-closed / not fabricated).
 
 ## Technology stack
 
