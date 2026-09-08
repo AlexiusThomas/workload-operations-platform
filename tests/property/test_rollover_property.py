@@ -97,7 +97,7 @@ def test_property_5_rollover_eligibility_invariant(
     assert rollover.is_eligible(work_unit) is False
     snapshot = dict(work_unit)
     if rollover.is_eligible(work_unit):  # pragma: no cover - guarded above
-        rollover._roll_one(work_unit, rollover.advance_scheduled_date, "corr")
+        rollover._roll_one(work_unit, rollover.advance_scheduled_date, "ROLLOVER#x", "corr")
     assert work_unit == snapshot
 
 
@@ -134,7 +134,10 @@ def test_property_6_rollover_data_preservation(
         assert rollover.is_eligible(seeded) is True
 
         summary = rollover.run_rollover(
-            "2099-01-01", correlation_id="corr", advancer=rollover.advance_scheduled_date
+            "2099-01-01",
+            cycle_key="ROLLOVER#2099-01-01",
+            correlation_id="corr",
+            advancer=rollover.advance_scheduled_date,
         )
         assert summary["rolled_over"] == 1
 

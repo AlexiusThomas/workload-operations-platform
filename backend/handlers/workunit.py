@@ -368,19 +368,40 @@ def _update_quantity(
                 before_state=sm.IN_PROGRESS,
                 after_state=sm.IN_PROGRESS,
                 correlation_id=correlation_id,
+                # Optimistic-concurrency guard against a lost update: require the persisted
+                # completed_qty to still equal the value we read (:prev_qty). Two concurrent
+                # same-owner updates that read the same prior value can no longer overwrite
+                # each other with a stale value or move completed_qty backward - the second
+                # write fails the condition and is surfaced as a 409 conflict. The existing
+                # state/qty-bound/owner conditions are preserved unchanged.
                 condition_expression=(
-                    "#state = :in_progress AND :new_qty <= required_qty AND claimed_by = :actor"
+                    "#state = :in_progress AND :new_qty <= required_qty "
+                    "AND claimed_by = :actor AND completed_qty = :prev_qty"
                 ),
                 expression_attribute_names={"#state": "state"},
                 expression_attribute_values={
                     ":in_progress": sm.IN_PROGRESS,
                     ":new_qty": new_qty,
                     ":actor": user_ctx.user_id,
+                    ":prev_qty": previous_qty,
                 },
                 metadata={"previous_qty": previous_qty, "new_qty": new_qty},
             )
         except ClientError as exc:
             if _is_condition_failure(exc):
+                # The guard bundles the qty upper bound with the stale-read check. Re-read to
+                # classify: still IN_PROGRESS but a different completed_qty => concurrent
+                # modification (409); a value over the bound => QUANTITY_EXCEEDED (400).
+                latest = repo.get_work_unit(work_unit_id)
+                if (
+                    latest is not None
+                    and str(latest.get("state")) == sm.IN_PROGRESS
+                    and int(latest.get("completed_qty", 0)) != previous_qty
+                    and new_qty <= int(latest.get("required_qty", 0))
+                ):
+                    raise errors.ClaimConflictError(
+                        "completed_qty changed concurrently; refresh and retry"
+                    )
                 raise errors.QuantityExceededError("completed_qty exceeds required_qty")
             raise
         return 200, _wu_response(updated)

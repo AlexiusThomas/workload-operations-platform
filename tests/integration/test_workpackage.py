@@ -155,3 +155,39 @@ def test_idempotent_create_replays(wired: Any) -> None:
     )
     items, _ = repo.list_work_packages()
     assert len(items) == 1
+
+
+# --------------------------------------------------------------- Task 23 issues 9 & 10
+
+
+def _wp_body(work_units: int, scheduled_date: str = "2024-01-15") -> Dict[str, Any]:
+    return {
+        "site": "SITE-A",
+        "rack_position": "RACK-001",
+        "work_type": "Fiber",
+        "scheduled_date": scheduled_date,
+        "work_units": [{"required_qty": 1, "work_type": "Fiber"} for _ in range(work_units)],
+    }
+
+
+def test_create_max_safe_work_units_succeeds(wired: Any) -> None:
+    """Issue 9: 32 work units (2 + 3*32 = 98 <= 100 transaction actions) is accepted."""
+    resp = workpackage.handle(_event("POST", body=_wp_body(32), idem_key="max-ok"))
+    assert resp["statusCode"] == 201
+    assert len(json.loads(resp["body"])["work_units"]) == 32
+
+
+def test_create_over_max_work_units_rejected_before_dynamo(wired: Any) -> None:
+    """Issue 9: 33 work units exceeds the DynamoDB TransactWriteItems 100-action limit and
+    is rejected by validation (400) before any DynamoDB call."""
+    resp = workpackage.handle(_event("POST", body=_wp_body(33), idem_key="max-bad"))
+    assert resp["statusCode"] == 400
+    assert json.loads(resp["body"])["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_create_rejects_non_iso_scheduled_date(wired: Any) -> None:
+    """Issue 10: scheduled_date must be a real ISO YYYY-MM-DD date, not any non-empty string."""
+    for bad in ["15-01-2024", "2024-13-01", "2024-01-32", "not-a-date"]:
+        resp = workpackage.handle(_event("POST", body=_wp_body(1, scheduled_date=bad)))
+        assert resp["statusCode"] == 400, f"expected 400 for scheduled_date={bad!r}"
+        assert json.loads(resp["body"])["error"]["code"] == "VALIDATION_ERROR"

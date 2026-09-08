@@ -247,15 +247,31 @@ def _s3_client() -> Any:
     return boto3.client("s3")
 
 
+def _decode_s3_key(raw_key: str) -> str:
+    """URL-decode an S3 object key from a notification/EventBridge event.
+
+    S3 event keys are URL-encoded (spaces as ``+``, other bytes as ``%XX``). Decode with
+    ``+`` treated as a space (S3 convention) before using the key for object access.
+    """
+    from urllib.parse import unquote_plus
+
+    return unquote_plus(raw_key)
+
+
 def _extract_s3_records(event: Dict[str, Any]) -> List[Dict[str, str]]:
-    """Extract ``{"bucket", "key"}`` records from an S3 ObjectCreated event."""
+    """Extract ``{"bucket", "key"}`` records from an S3 ObjectCreated event.
+
+    Handles both the native S3 notification shape and the EventBridge-transformed shape
+    (the compute stack maps EventBridge ``Object Created`` events into this same
+    ``Records[].s3.object.key`` structure). Object keys are URL-decoded (FR-001).
+    """
     records: List[Dict[str, str]] = []
     for record in event.get("Records", []):
         s3 = record.get("s3", {})
         bucket = s3.get("bucket", {}).get("name")
         key = s3.get("object", {}).get("key")
         if bucket and key:
-            records.append({"bucket": bucket, "key": key})
+            records.append({"bucket": bucket, "key": _decode_s3_key(key)})
     return records
 
 
@@ -407,7 +423,10 @@ def process_object(
         logger.info("ingestion_in_flight_skip", correlation_id=correlation_id, entity_id=key)
         return {"key": key, "status": "in_flight"}
 
-    if not idempotency.acquire_lock(idempotency_key, "ingestion", idempotency_key, fingerprint):
+    lock_token = idempotency.acquire_lock(
+        idempotency_key, "ingestion", idempotency_key, fingerprint
+    )
+    if lock_token is None:
         logger.info("ingestion_lock_contended", correlation_id=correlation_id, entity_id=key)
         return {"key": key, "status": "in_flight"}
 
@@ -428,7 +447,7 @@ def process_object(
         metrics.increment(metrics.INGESTION_FAILURE)
         _move_object_to_error(bucket, key, s3_client)
         body = f'{{"key": "{key}", "status": "schema_error"}}'
-        idempotency.store_idempotency_result(idempotency_key, 400, body)
+        idempotency.store_idempotency_result(idempotency_key, 400, body, lock_token=lock_token)
         return {"key": key, "status": "schema_error", "error": str(exc)}
 
     outcomes: List[Dict[str, str]] = []
@@ -447,7 +466,7 @@ def process_object(
             _mark_ingestion_error(parsed.work_package_id, correlation_id, str(exc))
             _move_object_to_error(bucket, key, s3_client)
             body = f'{{"key": "{key}", "status": "ingestion_error"}}'
-            idempotency.store_idempotency_result(idempotency_key, 500, body)
+            idempotency.store_idempotency_result(idempotency_key, 500, body, lock_token=lock_token)
             return {"key": key, "status": "ingestion_error", "outcomes": outcomes}
 
     metrics.increment(metrics.INGESTION_SUCCESS)
@@ -456,7 +475,7 @@ def process_object(
     import json
 
     body = json.dumps({"key": key, "status": "committed", "outcomes": outcomes})
-    idempotency.store_idempotency_result(idempotency_key, 200, body)
+    idempotency.store_idempotency_result(idempotency_key, 200, body, lock_token=lock_token)
     return {"key": key, "status": "committed", "outcomes": outcomes}
 
 

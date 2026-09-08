@@ -882,6 +882,7 @@ def write_rollover_transition(
     previous_date: str,
     new_date: str,
     new_rollover_count: int,
+    cycle_key: str,
     actor_id: str,
     actor_role: str,
     correlation_id: Optional[str],
@@ -909,19 +910,30 @@ def write_rollover_transition(
     canonical.setdefault("sk", METADATA_SK)
     canonical["current_scheduled_date"] = new_date
     canonical["rollover_count"] = new_rollover_count
+    canonical["last_rollover_cycle"] = cycle_key
     canonical["updated_at"] = ts
     # Refresh the GSI-1 composite sort key so the queue reflects the new scheduled date.
     canonical["sk_gsi1"] = f"{canonical.get('site')}#{canonical.get('work_type')}#{new_date}"
 
+    # Guard: still AVAILABLE, still on the expected source date, AND not already advanced by
+    # THIS cycle. The last_rollover_cycle check makes a cycle exactly-once per unit so a
+    # retry after a partial failure finishes only the remaining eligible units and never
+    # double-advances an already-processed one (FR-022 AC-8, FR-020 AC-8).
     canonical_put: Dict[str, Any] = {
         "TableName": tables.main_table().table_name,
         "Item": _to_dynamo(canonical),
         "ConditionExpression": (
-            "#state = :available AND current_scheduled_date = :expected_old_date"
+            "#state = :available AND current_scheduled_date = :expected_old_date "
+            "AND (attribute_not_exists(last_rollover_cycle) "
+            "OR last_rollover_cycle <> :cycle_key)"
         ),
         "ExpressionAttributeNames": {"#state": "state"},
         "ExpressionAttributeValues": _to_dynamo(
-            {":available": "AVAILABLE", ":expected_old_date": previous_date}
+            {
+                ":available": "AVAILABLE",
+                ":expected_old_date": previous_date,
+                ":cycle_key": cycle_key,
+            }
         ),
     }
 

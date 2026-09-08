@@ -82,6 +82,7 @@ class IdempotencyRecord:
     response_body: Optional[str]
     created_at: str
     ttl: int
+    lock_token: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -137,6 +138,7 @@ def _to_record(item: Dict[str, Any]) -> IdempotencyRecord:
         response_body=item.get("response_body"),
         created_at=item.get("created_at", ""),
         ttl=int(item.get("ttl", 0)),
+        lock_token=item.get("lock_token"),
     )
 
 
@@ -154,15 +156,22 @@ def acquire_lock(
     resource_id: str,
     request_fingerprint: str,
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
-) -> bool:
+    lock_token: Optional[str] = None,
+) -> Optional[str]:
     """Attempt to win the IN_FLIGHT lock via a conditional PutItem (FR-020 AC-4).
 
+    A per-acquisition ``lock_token`` is stored on the record so completion can be tied to the
+    execution that actually acquired the lock (see :func:`store_idempotency_result`); a stale
+    execution cannot overwrite a newer lock/result.
+
     Returns:
-        True if the lock was acquired; False if another request already holds it
-        (the conditional ``attribute_not_exists(pk)`` failed).
+        The lock token string if the lock was acquired; ``None`` if another request already
+        holds it (the conditional ``attribute_not_exists(pk)`` failed).
     """
+    import uuid as _uuid
     from botocore.exceptions import ClientError  # lazy import keeps module import-safe
 
+    token = lock_token or _uuid.uuid4().hex
     table = _get_table()
     item = {
         "pk": _pk(idempotency_key),
@@ -171,15 +180,16 @@ def acquire_lock(
         "resource_id": resource_id,
         "request_fingerprint": request_fingerprint,
         "status": STATUS_IN_FLIGHT,
+        "lock_token": token,
         "created_at": _iso_now(),
         "ttl": int(time.time()) + max(ttl_seconds, DEFAULT_TTL_SECONDS),
     }
     try:
         table.put_item(Item=item, ConditionExpression="attribute_not_exists(pk)")
-        return True
+        return token
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-            return False
+            return None
         raise
 
 
@@ -215,7 +225,11 @@ def check_idempotency(
             record=record,
         )
 
-    # IN_FLIGHT
+    # IN_FLIGHT: an in-progress request holds the lock. A DIFFERENT fingerprint means the
+    # same key is being reused with different parameters -> reject as a mismatch (FR-020 AC-4),
+    # not as an ordinary duplicate.
+    if record.request_fingerprint and record.request_fingerprint != request_fingerprint:
+        raise IdempotencyConflictError("Idempotency key reused with different request parameters.")
     return CheckResult(decision=DECISION_IN_FLIGHT, record=record)
 
 
@@ -224,27 +238,45 @@ def store_idempotency_result(
     status_code: int,
     response_body: str,
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
+    lock_token: Optional[str] = None,
 ) -> None:
     """Mark the record COMPLETED with the original response (FR-020 AC-2, AC-3).
 
-    Updates status to COMPLETED and stores ``status_code``, ``response_body``, and a TTL
-    of at least ``now + 86400`` seconds.
+    Updates status to COMPLETED and stores ``status_code``, ``response_body``, and a TTL of
+    at least ``now + 86400`` seconds. When ``lock_token`` is supplied the update is
+    conditional on the record still being IN_FLIGHT AND owned by that token, so a stale
+    execution cannot overwrite a newer lock's record/result (FR-020 exactly-once). A stale
+    completion attempt is swallowed (the newer owner will complete instead).
     """
+    from botocore.exceptions import ClientError  # lazy import keeps module import-safe
+
     table = _get_table()
     ttl_value = int(time.time()) + max(ttl_seconds, DEFAULT_TTL_SECONDS)
-    table.update_item(
-        Key={"pk": _pk(idempotency_key)},
-        UpdateExpression=(
+    kwargs: Dict[str, Any] = {
+        "Key": {"pk": _pk(idempotency_key)},
+        "UpdateExpression": (
             "SET #status = :completed, status_code = :sc, response_body = :body, #ttl = :ttl"
         ),
-        ExpressionAttributeNames={"#status": "status", "#ttl": "ttl"},
-        ExpressionAttributeValues={
+        "ExpressionAttributeNames": {"#status": "status", "#ttl": "ttl"},
+        "ExpressionAttributeValues": {
             ":completed": STATUS_COMPLETED,
             ":sc": status_code,
             ":body": response_body,
             ":ttl": ttl_value,
         },
-    )
+    }
+    if lock_token is not None:
+        kwargs["ConditionExpression"] = "#status = :in_flight AND lock_token = :token"
+        kwargs["ExpressionAttributeValues"][":in_flight"] = STATUS_IN_FLIGHT
+        kwargs["ExpressionAttributeValues"][":token"] = lock_token
+        try:
+            table.update_item(**kwargs)
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                return  # a newer lock owns the record; do not clobber it
+            raise
+    else:
+        table.update_item(**kwargs)
 
 
 def _is_stale(record: IdempotencyRecord, now_epoch: Optional[int] = None) -> bool:

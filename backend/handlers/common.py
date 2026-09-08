@@ -17,6 +17,7 @@ This module is import-safe without AWS credentials.
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from backend.auth import provider as auth_provider
@@ -163,20 +164,66 @@ def run_idempotent(
         return _replay(check, correlation_id)
 
     if check.decision == idempotency.DECISION_IN_FLIGHT:
-        recovered = _recover(key, expected_state_matches, build_replay_body)
-        if recovered.decision == idempotency.DECISION_REPLAY:
-            return _replay(recovered, correlation_id)
-        if recovered.decision == idempotency.DECISION_IN_FLIGHT:
-            raise errors.IdempotencyConflictError("operation is already in progress")
-        # PROCEED falls through to lock + execute.
+        # FR-020 AC-4: two concurrent requests with the same key must execute exactly once and
+        # BOTH receive the result. The duplicate caller waits briefly for the in-flight owner
+        # to complete, then replays the stored response. If the lock turns out to be an
+        # orphaned/stale one (crash), recovery either replays a committed result or frees the
+        # lock so we can proceed.
+        replay = _await_completion_or_recover(
+            key, fingerprint, expected_state_matches, build_replay_body
+        )
+        if replay is not None:
+            return replay
+        # else: the in-flight lock was stale and freed; fall through to acquire + execute.
 
-    if not idempotency.acquire_lock(key, operation, resource_id, fingerprint):
-        # Another request won the lock between our check and now.
+    token = idempotency.acquire_lock(key, operation, resource_id, fingerprint)
+    if token is None:
+        # Another request won the lock between our check and now: wait for its result.
+        replay = _await_completion_or_recover(
+            key, fingerprint, expected_state_matches, build_replay_body
+        )
+        if replay is not None:
+            return replay
+        # Still could not obtain a result and the lock is not stale-recoverable.
         raise errors.IdempotencyConflictError("operation is already in progress")
 
     status_code, body = execute()
-    idempotency.store_idempotency_result(key, status_code, json.dumps(body, default=str))
+    idempotency.store_idempotency_result(
+        key, status_code, json.dumps(body, default=str), lock_token=token
+    )
     return success(status_code, body, correlation_id)
+
+
+#: Bounded wait for an in-flight idempotent request to complete (FR-020 AC-4).
+_INFLIGHT_WAIT_ATTEMPTS = 5
+_INFLIGHT_WAIT_SECONDS = 0.2
+
+
+def _await_completion_or_recover(
+    key: str,
+    fingerprint: str,
+    expected_state_matches: Optional[Callable[[], bool]],
+    build_replay_body: Optional[Callable[[], Dict[str, Any]]],
+) -> Optional[Dict[str, Any]]:
+    """Wait for an in-flight same-key request to complete, then replay its result.
+
+    Returns a replayed success response when the original request completed (FR-020 AC-4),
+    or ``None`` when the in-flight lock is stale and has been freed for re-execution. Raises
+    IdempotencyConflictError only if the wait elapses with the lock still genuinely active.
+    """
+    for _ in range(_INFLIGHT_WAIT_ATTEMPTS):
+        current = idempotency.check_idempotency(key, fingerprint)
+        if current.decision == idempotency.DECISION_REPLAY:
+            return _replay(current, None)
+        # Try deterministic crash recovery (stale lock => REPLAY or PROCEED).
+        recovered = _recover(key, expected_state_matches, build_replay_body)
+        if recovered.decision == idempotency.DECISION_REPLAY:
+            return _replay(recovered, None)
+        if recovered.decision == idempotency.DECISION_PROCEED:
+            return None  # stale lock freed; caller should acquire + execute
+        time.sleep(_INFLIGHT_WAIT_SECONDS)
+    # Wait elapsed with the lock still active and non-stale.
+    raise errors.IdempotencyConflictError("operation is already in progress")
 
 
 def _replay(check: Any, correlation_id: Optional[str]) -> Dict[str, Any]:

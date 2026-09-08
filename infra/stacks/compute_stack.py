@@ -47,20 +47,50 @@ ENV_PROD = "prod"
 # CloudWatch custom metric namespace (scopes the PutMetricData wildcard exception).
 METRICS_NAMESPACE = "WOP/Operations"
 
-# Placeholder Lambda code. Real deployment packages the backend/ tree; for synth and
-# review no bundling is required. Inline code keeps synth hermetic and deploy-free.
-# Lambda layers cannot use inline code (CDK: InlineCodeSupportedLambdaLayers);
-# they require an on-disk asset. This placeholder dir is packaged at synth time;
-# the real idempotency payload is wired at deploy time.
-_LAYER_ASSET_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "layer_placeholder",
-)
+# The Lambda functions execute the REAL backend application. The deployment package is the
+# repository root's ``backend/`` package tree; each function points at its real handler
+# module via ``handler="backend.handlers.<mod>.handle"``. No placeholder / NotImplementedError
+# code is used. Synthesis is deploy-free: from_asset stages the backend directory; no network
+# or bundling step runs during synth.
+# infra/stacks/compute_stack.py -> parents[2] is the repository root.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_BACKEND_ASSET_PATH = os.path.join(_REPO_ROOT, "backend")
 
-_PLACEHOLDER_CODE = lambda_.Code.from_inline(
-    "def handler(event, context):\n"
-    "    raise NotImplementedError('Deployment packaging is wired at deploy time')\n"
-)
+# The shared idempotency layer also ships the real backend code (the idempotency package is
+# imported by the mutating handlers); a layer needs an on-disk asset (inline is rejected).
+_LAYER_ASSET_PATH = os.path.join(_REPO_ROOT, "infra", "layer_placeholder")
+
+#: Real handler entrypoints per Lambda function name (module.handle in the backend package).
+_HANDLER_ENTRYPOINTS = {
+    "wop-ingestion-handler": "backend.handlers.ingestion.handle",
+    "wop-workpackage-handler": "backend.handlers.workpackage.handle",
+    "wop-workunit-handler": "backend.handlers.workunit.handle",
+    "wop-material-handler": "backend.handlers.material.handle",
+    "wop-audit-query-handler": "backend.handlers.audit_query.handle",
+    "wop-rollover-handler": "backend.handlers.rollover.handle",
+    "wop-report-handler": "backend.handlers.report.handle",
+    "wop-synthetic-data": "backend.synthetic.generator.handle",
+}
+
+#: Paths excluded from the Lambda deployment asset (tests, infra, frontend, caches).
+_ASSET_EXCLUDES = [
+    "tests",
+    "infra",
+    "frontend",
+    "ci",
+    ".github",
+    "docs",
+    ".git",
+    "**/__pycache__",
+    "*.pyc",
+    ".venv",
+    "node_modules",
+    "cdk.out",
+    "dist_artifacts",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".hypothesis",
+]
 
 
 def assert_prod_auth_mode(environment: str, auth_mode: Optional[str]) -> None:
@@ -128,13 +158,14 @@ class ComputeStack(Stack):
         )
 
         def make_fn(logical_id: str, fn_name: str) -> lambda_.Function:
+            handler_entry = _HANDLER_ENTRYPOINTS[fn_name]
             fn = lambda_.Function(
                 self,
                 logical_id,
                 function_name=f"{fn_name}-{environment}",
                 runtime=lambda_.Runtime.PYTHON_3_13,
-                handler="index.handler",
-                code=_PLACEHOLDER_CODE,
+                handler=handler_entry,  # real backend handler (never a placeholder)
+                code=lambda_.Code.from_asset(_REPO_ROOT, exclude=_ASSET_EXCLUDES),
                 environment=dict(base_env),
                 timeout=Duration.seconds(30),
                 memory_size=256,
@@ -185,23 +216,30 @@ class ComputeStack(Stack):
         events_table.grant_read_data(report)
 
         # S3 prefixes for ingestion (DEP-001 RATS drops into import prefix).
+        # Ingestion reads the import object, then moves it (copy to archive/error + DELETE the
+        # original). Grant read + delete on the import bucket ONLY, and put on archive/error.
         import_bucket.grant_read(ingestion)
+        import_bucket.grant_delete(ingestion)
         archive_bucket.grant_put(ingestion)
         error_bucket.grant_put(ingestion)
 
         # S3 import object-created triggers the ingestion handler (DEP-001 RATS).
-        # The notification is configured on the bucket in the data stack to keep the
-        # cross-stack dependency one-directional (compute -> data); here we only grant
-        # S3 permission to invoke the ingestion Lambda, avoiding a data<->compute cycle.
-        self._grant_s3_invoke(import_bucket, ingestion)
+        # Uses EventBridge (the import bucket has EventBridge notifications enabled in the
+        # data stack) matched by bucket NAME string, so this rule references no DataStack
+        # construct and introduces no data<->compute dependency cycle. An input transformer
+        # maps the EventBridge S3 detail shape into the S3 "Records" event shape the ingestion
+        # handler already parses (no ingestion logic is duplicated).
+        self._wire_ingestion_eventbridge(import_bucket, ingestion, environment)
 
         # ---- API Gateway (HTTPS-only, TLS 1.2+, /v1/) ----
         self.api = apigw.RestApi(
             self,
             "WopApi",
             rest_api_name=f"wop-api-{environment}",
+            # Version prefix lives ONLY in the resource hierarchy (/v1/...), never in the
+            # stage name, so the external path is /v1/... and never /v1/v1/... .
             deploy_options=apigw.StageOptions(
-                stage_name="v1",
+                stage_name="api",
                 tracing_enabled=True,
                 metrics_enabled=True,
             ),
@@ -260,16 +298,44 @@ class ComputeStack(Stack):
             )
         )
 
-    def _grant_s3_invoke(self, import_bucket: s3.IBucket, ingestion: lambda_.Function) -> None:
-        # Allow S3 (the import bucket) to invoke the ingestion Lambda. This adds a
-        # compute -> data reference only (via the bucket ARN in the source condition),
-        # never data -> compute, so no stack dependency cycle is introduced. The
-        # matching bucket notification is declared in the data stack / at deploy time.
-        ingestion.add_permission(
-            "AllowImportBucketInvoke",
-            principal=iam.ServicePrincipal("s3.amazonaws.com"),
-            action="lambda:InvokeFunction",
-            source_arn=import_bucket.bucket_arn,
+    def _wire_ingestion_eventbridge(
+        self, import_bucket: s3.IBucket, ingestion: lambda_.Function, environment: str
+    ) -> None:
+        # Match S3 "Object Created" EventBridge events for the import bucket (by name) and
+        # route them to the ingestion Lambda. The input transformer reshapes the event into
+        # the S3 notification "Records" structure the ingestion handler expects, so the
+        # handler is unchanged and no ingestion logic is duplicated.
+        rule = events.Rule(
+            self,
+            "IngestionS3Rule",
+            rule_name=f"wop-ingestion-s3-{environment}",
+            event_pattern=events.EventPattern(
+                source=["aws.s3"],
+                detail_type=["Object Created"],
+                detail={"bucket": {"name": [import_bucket.bucket_name]}},
+            ),
+        )
+        rule.add_target(
+            targets.LambdaFunction(
+                ingestion,
+                event=events.RuleTargetInput.from_object(
+                    {
+                        "Records": [
+                            {
+                                "eventSource": "aws:s3",
+                                "s3": {
+                                    "bucket": {
+                                        "name": events.EventField.from_path("$.detail.bucket.name")
+                                    },
+                                    "object": {
+                                        "key": events.EventField.from_path("$.detail.object.key")
+                                    },
+                                },
+                            }
+                        ]
+                    }
+                ),
+            )
         )
 
     def _add_proxy(self, parent: apigw.IResource, path: str, fn: lambda_.Function) -> None:

@@ -173,7 +173,13 @@ class DataStack(Stack):
             removal_policy=RemovalPolicy.RETAIN if is_prod else RemovalPolicy.DESTROY,
             auto_delete_objects=not is_prod,
         )
-        self.import_bucket = s3.Bucket(self, "ImportBucket", **common_bucket_kwargs)
+        # The import bucket emits S3 "Object Created" events to EventBridge so the compute
+        # stack can route them to the ingestion Lambda WITHOUT a cross-stack notification
+        # (which would create a data<->compute dependency cycle). This is a bucket property
+        # only; it introduces no dependency on the compute stack.
+        self.import_bucket = s3.Bucket(
+            self, "ImportBucket", event_bridge_enabled=True, **common_bucket_kwargs
+        )
         self.archive_bucket = s3.Bucket(self, "ArchiveBucket", **common_bucket_kwargs)
         self.error_bucket = s3.Bucket(self, "ErrorBucket", **common_bucket_kwargs)
 

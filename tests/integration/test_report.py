@@ -314,3 +314,38 @@ def test_report_post_well_formed_week_key_returns_200(wired: Any) -> None:
     resp = report.handle(event)
     assert resp["statusCode"] == 200
     assert json.loads(resp["body"])["week_key"] == WEEK
+
+
+def test_report_scheduled_derives_week_from_event_time(wired: Any) -> None:
+    """Issue 4: a recurring EventBridge run with NO week_key derives the week from ``time``.
+
+    2024-01-17 falls in ISO week 2024-W03. The scheduled event carries only the EventBridge
+    ``time`` (not a hard-coded week_key), and the report targets that week's events.
+    """
+    _seed()
+    result = report.handle({"time": "2024-01-17T06:00:00Z"})
+    assert result["week_key"] == WEEK
+    assert len(result["technician_production"]) == 2
+
+
+def test_report_scheduled_without_time_uses_current_week(wired: Any) -> None:
+    """Issue 4: scheduled run with neither week_key nor time falls back to the current week."""
+    # No seeded events for the current week -> empty but well-formed report (no crash).
+    result = report.handle({})
+    assert "week_key" in result
+    assert result["technician_production"] == []
+
+
+def test_report_rejects_impossible_iso_weeks(wired: Any) -> None:
+    """Issue 10: W00 and W54-W99 are impossible ISO weeks and must fail validation (400)."""
+    for bad in ["2024-W00", "2024-W54", "2024-W99"]:
+        resp = _get(ADMIN, week_key=bad)
+        assert resp["statusCode"] == 400, f"expected 400 for {bad}"
+        assert json.loads(resp["body"])["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_report_accepts_valid_week_boundaries(wired: Any) -> None:
+    """Issue 10 regression: W01 and W53 remain valid ISO weeks."""
+    for good in ["2024-W01", "2024-W53"]:
+        resp = _get(ADMIN, week_key=good)
+        assert resp["statusCode"] == 200, f"expected 200 for {good}"

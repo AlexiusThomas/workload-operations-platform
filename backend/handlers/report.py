@@ -26,12 +26,14 @@ Report contents (FR-024 AC-1):
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from backend.auth import middleware as auth
 from backend.data import repositories as repo
+from backend.domain import reporting
 from backend.handlers import common, validation
 from backend.handlers.middleware import error_handler
 from backend.observability import errors, metrics
@@ -217,6 +219,22 @@ def _post(event: Dict[str, Any], correlation_id: str) -> Dict[str, Any]:
     return common.success(200, report, correlation_id)
 
 
+def _scheduled_week_key(event: Dict[str, Any]) -> str:
+    """Derive the ISO week_key for a scheduled report run from the EventBridge event time.
+
+    Uses the EventBridge ``time`` field (the scheduled trigger timestamp, ISO-8601); falls
+    back to the current UTC time when absent. The report thus always targets the ISO week of
+    the trigger, so a recurring weekly schedule reports the correct week each run
+    (FR-024 AC-5) without any hard-coded week_key.
+    """
+    raw_time = event.get("time")
+    if isinstance(raw_time, str) and raw_time:
+        ts = raw_time
+    else:
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return reporting.compute_week_key(ts)
+
+
 @error_handler
 def handle(
     event: Dict[str, Any], context: Any = None, *, correlation_id: str = ""
@@ -228,9 +246,12 @@ def handle(
     """
     method = event.get("httpMethod")
     if method is None:
-        # EventBridge scheduled invocation — generate for the supplied week_key.
+        # EventBridge scheduled invocation. A recurring schedule cannot carry a fixed
+        # week_key, so derive the week from the scheduled event timestamp (EventBridge
+        # ``time``). An explicit ``week_key`` on the event still wins (e.g. manual replays).
         correlation_id = correlation_id or str(uuid4())
-        week_key = _require_week_key(event.get("week_key"))
+        week_key = event.get("week_key") or _scheduled_week_key(event)
+        validation.validate_operation("report_request", {"week_key": week_key})
         metrics.increment(metrics.REPORT_GENERATION)
         return generate_weekly_report(week_key)
 

@@ -58,6 +58,16 @@ _NON_EMPTY_STRING = {"type": "string", "minLength": 1}
 _POSITIVE_INT = {"type": "integer", "minimum": 1}
 _NON_NEGATIVE_INT = {"type": "integer", "minimum": 0}
 _POSITIVE_NUMBER = {"type": "number", "exclusiveMinimum": 0}
+#: ISO calendar date YYYY-MM-DD with bounded month (01-12) and day (01-31).
+_ISO_DATE = {
+    "type": "string",
+    "pattern": r"^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$",
+}
+
+#: Max WorkUnits creatable atomically with a WorkPackage. DynamoDB TransactWriteItems
+#: caps at 100 actions; create emits 2 (package canonical+audit) + 3 per unit
+#: (canonical+projection+audit): 2 + 3N <= 100 => N <= 32.
+MAX_WORK_UNITS_PER_PACKAGE = 32
 
 
 # ---------------------------------------------------------------------------
@@ -79,8 +89,12 @@ WORK_PACKAGE_CREATE_SCHEMA: Dict[str, Any] = {
         "site": _NON_EMPTY_STRING,
         "rack_position": _NON_EMPTY_STRING,
         "work_type": {"type": "string", "enum": WORK_TYPES},
-        "scheduled_date": _NON_EMPTY_STRING,
-        "work_units": {"type": "array", "items": WORK_UNIT_ITEM_SCHEMA},
+        "scheduled_date": _ISO_DATE,
+        "work_units": {
+            "type": "array",
+            "items": WORK_UNIT_ITEM_SCHEMA,
+            "maxItems": MAX_WORK_UNITS_PER_PACKAGE,
+        },
     },
     "required": WORK_PACKAGE_MANDATORY_ATTRIBUTES,
     "additionalProperties": False,
@@ -139,7 +153,7 @@ ASSIGNMENT_SCHEMA: Dict[str, Any] = {
 REPORT_REQUEST_SCHEMA: Dict[str, Any] = {
     "type": "object",
     # ISO week key such as 2024-W03.
-    "properties": {"week_key": {"type": "string", "pattern": r"^\d{4}-W\d{2}$"}},
+    "properties": {"week_key": {"type": "string", "pattern": r"^\d{4}-W(0[1-9]|[1-4]\d|5[0-3])$"}},
     "required": ["week_key"],
     "additionalProperties": False,
 }

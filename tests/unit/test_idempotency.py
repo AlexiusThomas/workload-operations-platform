@@ -87,9 +87,10 @@ def test_completed_mismatched_fingerprint_conflicts(idem_table: Any) -> None:
 
 def test_acquire_lock_second_attempt_fails(idem_table: Any) -> None:
     fp = layer.compute_fingerprint("claim", "wu-9", {})
-    assert layer.acquire_lock("key-4", "claim", "wu-9", fp) is True
+    token = layer.acquire_lock("key-4", "claim", "wu-9", fp)
+    assert token is not None  # lock acquired -> a lock token is returned
     # A second concurrent request with the same key cannot re-acquire the lock.
-    assert layer.acquire_lock("key-4", "claim", "wu-9", fp) is False
+    assert layer.acquire_lock("key-4", "claim", "wu-9", fp) is None
 
 
 def test_check_in_flight_decision(idem_table: Any) -> None:
@@ -154,7 +155,7 @@ def test_recover_stale_in_flight_entity_mismatch_deletes_and_proceeds(idem_table
 
     # The orphaned record was deleted; a fresh check proceeds, and the lock is re-acquirable.
     assert layer.check_idempotency("key-8", fp).decision == layer.DECISION_PROCEED
-    assert layer.acquire_lock("key-8", "claim", "wu-9", fp) is True
+    assert layer.acquire_lock("key-8", "claim", "wu-9", fp) is not None
 
 
 def test_store_result_sets_ttl_at_least_24h(idem_table: Any) -> None:
@@ -164,3 +165,45 @@ def test_store_result_sets_ttl_at_least_24h(idem_table: Any) -> None:
     layer.store_idempotency_result("key-9", status_code=200, response_body="{}")
     item = idem_table.get_item(Key={"pk": "IDMP#key-9"})["Item"]
     assert int(item["ttl"]) >= before + layer.DEFAULT_TTL_SECONDS
+
+
+# --------------------------------------------------------------- Task 23 issue 8 (idempotency)
+
+
+def test_in_flight_different_fingerprint_is_conflict(idem_table: Any) -> None:
+    """8A: an IN_FLIGHT record with a DIFFERENT fingerprint is a key-reuse mismatch (409),
+    not an ordinary duplicate."""
+    fp = layer.compute_fingerprint("claim", "wu-1", {"x": 1})
+    layer.acquire_lock("key-8a", "claim", "wu-1", fp)  # still IN_FLIGHT (no store)
+    other_fp = layer.compute_fingerprint("claim", "wu-1", {"x": 2})
+    with pytest.raises(IdempotencyConflictError):
+        layer.check_idempotency("key-8a", other_fp)
+    # Same fingerprint while in-flight is still an ordinary in-flight (not a conflict).
+    assert layer.check_idempotency("key-8a", fp).decision == layer.DECISION_IN_FLIGHT
+
+
+def test_stale_execution_cannot_complete_newer_lock(idem_table: Any) -> None:
+    """8B: a stale execution cannot overwrite a newer lock's record.
+
+    Owner A acquires the lock (token A). The record is then re-acquired by owner B (after A's
+    record is cleared), producing token B. A late store from A (token A) must NOT clobber B's
+    IN_FLIGHT record; only B's token may complete it."""
+    fp = layer.compute_fingerprint("verify", "wu-2", {})
+    token_a = layer.acquire_lock("key-8b", "verify", "wu-2", fp)
+    assert token_a is not None
+
+    # Simulate A's lock being recovered/freed and B acquiring a fresh lock.
+    layer.delete_orphaned_in_flight("key-8b")
+    token_b = layer.acquire_lock("key-8b", "verify", "wu-2", fp)
+    assert token_b is not None and token_b != token_a
+
+    # Stale A tries to complete using its old token -> no-op (condition fails, swallowed).
+    layer.store_idempotency_result("key-8b", 200, '{"owner": "A"}', lock_token=token_a)
+    # The record is still IN_FLIGHT (B has not completed) - A did not clobber it.
+    assert layer.check_idempotency("key-8b", fp).decision == layer.DECISION_IN_FLIGHT
+
+    # B completes with its own token -> success, and the stored body is B's.
+    layer.store_idempotency_result("key-8b", 200, '{"owner": "B"}', lock_token=token_b)
+    replay = layer.check_idempotency("key-8b", fp)
+    assert replay.decision == layer.DECISION_REPLAY
+    assert json.loads(replay.response_body)["owner"] == "B"

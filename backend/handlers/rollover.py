@@ -105,11 +105,14 @@ def _cycle_date(event: Dict[str, Any]) -> str:
     return datetime.now(timezone.utc).date().isoformat()
 
 
-def _roll_one(work_unit: Dict[str, Any], advancer: DateAdvancer, correlation_id: str) -> bool:
+def _roll_one(
+    work_unit: Dict[str, Any], advancer: DateAdvancer, cycle_key: str, correlation_id: str
+) -> bool:
     """Attempt to roll a single eligible WorkUnit forward. Returns True on success.
 
-    A conditional-check failure (claimed since query, or already advanced this cycle) is
-    swallowed and reported as a skip (returns False).
+    A conditional-check failure (claimed since query, or already advanced by THIS cycle) is
+    swallowed and reported as a skip (returns False), so a retry after a partial failure is
+    exactly-once per unit.
     """
     previous_date = str(work_unit.get("current_scheduled_date"))
     new_date = advancer(previous_date)
@@ -120,6 +123,7 @@ def _roll_one(work_unit: Dict[str, Any], advancer: DateAdvancer, correlation_id:
             previous_date=previous_date,
             new_date=new_date,
             new_rollover_count=new_rollover_count,
+            cycle_key=cycle_key,
             actor_id=SYSTEM_ACTOR,
             actor_role=SYSTEM_ROLE,
             correlation_id=correlation_id,
@@ -138,7 +142,9 @@ def _roll_one(work_unit: Dict[str, Any], advancer: DateAdvancer, correlation_id:
     return True
 
 
-def run_rollover(cycle_date: str, *, correlation_id: str, advancer: DateAdvancer) -> Dict[str, Any]:
+def run_rollover(
+    cycle_date: str, *, cycle_key: str, correlation_id: str, advancer: DateAdvancer
+) -> Dict[str, Any]:
     """Roll all eligible AVAILABLE WorkUnits forward for one cycle (post-idempotency check).
 
     Queries the AVAILABLE queue via GSI-1 and advances each eligible unit. Paginates through
@@ -155,7 +161,7 @@ def run_rollover(cycle_date: str, *, correlation_id: str, advancer: DateAdvancer
         for work_unit in items:
             if not is_eligible(work_unit):
                 continue
-            if _roll_one(work_unit, advancer, correlation_id):
+            if _roll_one(work_unit, advancer, cycle_key, correlation_id):
                 rolled_over += 1
             else:
                 skipped += 1
@@ -206,14 +212,25 @@ def handle(
             json.loads(check.response_body) if check.response_body else {"cycle_date": cycle_date}
         )
     if check.decision == idempotency.DECISION_IN_FLIGHT:
-        logger.info("rollover_in_flight_skip", correlation_id=correlation_id, action="rollover")
-        return {"cycle_date": cycle_date, "status": "in_flight"}
+        # A prior attempt for this cycle did not complete. If its lock is stale (orphaned by a
+        # crash/partial failure), drop it and re-run: the per-unit last_rollover_cycle guard
+        # makes re-processing exactly-once, so recovery finishes only the remaining eligible
+        # units. A fresh (non-stale) lock means another attempt is genuinely in progress.
+        record = check.record
+        if record is not None and idempotency._is_stale(record):
+            idempotency.delete_orphaned_in_flight(cycle_key)
+        else:
+            logger.info("rollover_in_flight_skip", correlation_id=correlation_id, action="rollover")
+            return {"cycle_date": cycle_date, "status": "in_flight"}
 
-    if not idempotency.acquire_lock(cycle_key, "rollover", cycle_key, fingerprint):
+    lock_token = idempotency.acquire_lock(cycle_key, "rollover", cycle_key, fingerprint)
+    if lock_token is None:
         logger.info("rollover_lock_contended", correlation_id=correlation_id, action="rollover")
         return {"cycle_date": cycle_date, "status": "in_flight"}
 
     logger.info("rollover_started", correlation_id=correlation_id, action="rollover")
-    summary = run_rollover(cycle_date, correlation_id=correlation_id, advancer=active_advancer)
-    idempotency.store_idempotency_result(cycle_key, 200, json.dumps(summary))
+    summary = run_rollover(
+        cycle_date, cycle_key=cycle_key, correlation_id=correlation_id, advancer=active_advancer
+    )
+    idempotency.store_idempotency_result(cycle_key, 200, json.dumps(summary), lock_token=lock_token)
     return summary

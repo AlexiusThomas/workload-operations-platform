@@ -178,7 +178,8 @@ def test_api_gateway_present(templates):
 
 
 def test_eventbridge_rollover_and_report_rules(templates):
-    templates["compute"].resource_count_is("AWS::Events::Rule", 2)
+    # rollover schedule + report schedule + import-bucket S3 ingestion rule = 3.
+    templates["compute"].resource_count_is("AWS::Events::Rule", 3)
 
 
 def test_eventbridge_rules_have_lambda_targets(templates):
@@ -298,3 +299,80 @@ def test_sns_alarm_topic_present(templates):
 def test_log_groups_present(templates):
     log_groups = templates["monitoring"].find_resources("AWS::Logs::LogGroup")
     assert len(log_groups) == 8
+
+
+# --------------------------------------------------------------- Task 23 correctness fixes
+
+
+def test_lambda_functions_are_not_placeholders(templates):
+    """Issue 1: every Lambda points at a real backend.* handler, never a placeholder."""
+    fns = templates["compute"].find_resources("AWS::Lambda::Function")
+    handlers = [p["Properties"].get("Handler", "") for p in fns.values()]
+    assert handlers, "expected Lambda functions"
+    for h in handlers:
+        assert h.startswith("backend."), f"non-real handler: {h}"
+        assert h.endswith(".handle"), f"unexpected handler entrypoint: {h}"
+        assert h != "index.handler", "placeholder handler still present"
+
+
+def test_lambda_code_is_asset_not_inline(templates):
+    """Issue 1: functions deploy an S3 asset (real code), not inline placeholder code."""
+    fns = templates["compute"].find_resources("AWS::Lambda::Function")
+    for props in fns.values():
+        code = props["Properties"].get("Code", {})
+        # Real packaged code uses an S3 asset (S3Bucket/S3Key), never inline ZipFile.
+        assert "ZipFile" not in code, "inline placeholder code found"
+        assert "S3Bucket" in code or "S3Key" in code
+
+
+def test_ingestion_s3_eventbridge_trigger_targets_ingestion(templates):
+    """Issue 2: an EventBridge rule for S3 Object Created targets the ingestion Lambda."""
+    rules = templates["compute"].find_resources("AWS::Events::Rule")
+    s3_rules = [
+        p
+        for p in rules.values()
+        if p["Properties"].get("EventPattern", {}).get("source") == ["aws.s3"]
+    ]
+    assert len(s3_rules) == 1, "expected exactly one S3 object-created ingestion rule"
+    rule = s3_rules[0]["Properties"]
+    assert rule["EventPattern"].get("detail-type") == ["Object Created"]
+    assert rule.get("Targets"), "S3 ingestion rule has no target"
+
+
+def test_import_bucket_emits_eventbridge(templates):
+    """Issue 2: the import bucket has EventBridge notifications enabled (no cross-stack cycle).
+
+    CDK renders ``event_bridge_enabled=True`` as an ``EventBridgeConfiguration`` on the
+    Custom::S3BucketNotifications custom resource that manages the bucket notification.
+    """
+    notifs = templates["data"].find_resources("Custom::S3BucketNotifications")
+    assert notifs, "no S3 bucket notification custom resource found"
+    assert any(
+        "EventBridgeConfiguration" in props["Properties"].get("NotificationConfiguration", {})
+        for props in notifs.values()
+    ), "import bucket does not enable EventBridge notifications"
+
+
+def test_api_stage_is_not_v1_no_double_prefix(templates):
+    """Issue 3: version prefix lives only in the resource path, never also in the stage name."""
+    stages = templates["compute"].find_resources("AWS::ApiGateway::Stage")
+    for props in stages.values():
+        assert props["Properties"].get("StageName") != "v1"
+    # And there is a single /v1 resource under the API root (not nested /v1/v1).
+    resources = templates["compute"].find_resources("AWS::ApiGateway::Resource")
+    v1_path_parts = [r["Properties"].get("PathPart") for r in resources.values()]
+    assert v1_path_parts.count("v1") == 1, "expected exactly one 'v1' path segment"
+
+
+def test_ingestion_has_import_bucket_delete_permission(templates):
+    """Issue 5: ingestion role can s3:DeleteObject on the import bucket (moves originals)."""
+    policies = templates["compute"].find_resources("AWS::IAM::Policy")
+    found_delete = False
+    for props in policies.values():
+        for stmt in props["Properties"]["PolicyDocument"]["Statement"]:
+            actions = stmt.get("Action", [])
+            if isinstance(actions, str):
+                actions = [actions]
+            if any(a == "s3:DeleteObject*" or a == "s3:DeleteObject" for a in actions):
+                found_delete = True
+    assert found_delete, "ingestion is missing s3:DeleteObject on the import bucket"

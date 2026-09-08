@@ -196,3 +196,27 @@ def generate_dataset(
         "work_units": work_units,
         "material_requirements": material_requirements,
     }
+
+
+def handle(event: Optional[Dict[str, Any]] = None, context: Any = None) -> Dict[str, Any]:
+    """Lambda entrypoint for the synthetic-data utility (dev/staging only).
+
+    Self-guards production: :func:`generate_dataset` raises when ``ENVIRONMENT=prod``
+    (FR-023 AC-3, RISK-006). This function is the real handler referenced by the CDK
+    ``wop-synthetic-data`` function, which is itself excluded from prod stacks (CON-005).
+
+    The event may carry ``work_package_count``, ``units_per_package``, and ``work_types``;
+    sensible defaults are used when absent.
+    """
+    event = event or {}
+    work_types = event.get("work_types") or [material_domain.FIBER, material_domain.COPPER]
+    dataset = generate_dataset(
+        work_package_count=int(event.get("work_package_count", 1)),
+        units_per_package=int(event.get("units_per_package", 1)),
+        work_types=list(work_types),
+    )
+    return {
+        "work_packages": len(dataset["work_packages"]),
+        "work_units": len(dataset["work_units"]),
+        "material_requirements": len(dataset["material_requirements"]),
+    }
